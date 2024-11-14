@@ -5,18 +5,22 @@
 #include <queue>
 #include <cmath>
 #include <algorithm>
+#include <thread>
+#include <mutex>
+
+std::mutex mtx;
 
 struct Record {
     int customer_id;
     std::string item_purchased;
     double review_rating;
-    int manhattan_distance;
+    double manhattan_distance;
 
-    Record(int id, std::string item, double rating) 
-        : customer_id(id), item_purchased(item), review_rating(rating), manhattan_distance(0) {}
+    Record(int id, std::string item, double rating)
+        : customer_id(id), item_purchased(item), review_rating(rating), manhattan_distance(0.0) {}
 
     bool operator<(const Record& other) const {
-        return this->manhattan_distance < other.manhattan_distance;
+        return this->manhattan_distance > other.manhattan_distance;
     }
 };
 
@@ -32,6 +36,7 @@ public:
     BST() : root(nullptr) {}
 
     void insert(Record record) {
+        std::lock_guard<std::mutex> lock(mtx);  // Bloqueo para proteger el acceso al árbol
         root = insertRec(root, record);
     }
 
@@ -66,17 +71,20 @@ private:
     void findKClosest(Node* node, const Record& target, int k, std::priority_queue<Record>& closest) {
         if (node == nullptr) return;
 
-        int distance = std::abs(target.customer_id - node->data.customer_id);
-        node->data.manhattan_distance = distance;
+        double review_distance = std::abs(target.review_rating - node->data.review_rating);
+        double item_distance = (target.item_purchased == node->data.item_purchased) ? 0.0 : 1.0;
+        double total_distance = review_distance + item_distance;
+
+        node->data.manhattan_distance = total_distance;
 
         if (closest.size() < k) {
             closest.push(node->data);
-        } else if (distance < closest.top().manhattan_distance) {
+        } else if (total_distance < closest.top().manhattan_distance) {
             closest.pop();
             closest.push(node->data);
         }
 
-        if (target.customer_id < node->data.customer_id) {
+        if (target.review_rating < node->data.review_rating) {
             findKClosest(node->left, target, k, closest);
         } else {
             findKClosest(node->right, target, k, closest);
@@ -101,7 +109,6 @@ std::vector<Record> loadRecords(const std::string& filename) {
         getline(ss, temp, ',');
         customer_id = std::stoi(temp);
 
-        // Omitimos columnas intermedias
         getline(ss, temp, ',');  // Edad
         getline(ss, temp, ',');  // Género
         getline(ss, item_purchased, ',');  // Artículo comprado
@@ -114,8 +121,7 @@ std::vector<Record> loadRecords(const std::string& filename) {
         getline(ss, temp, ',');  // Calificación de la reseña
         review_rating = std::stod(temp);
 
-        // Omitimos las columnas restantes
-        for (int i = 0; i < 9; ++i) getline(ss, temp, ',');  // Subscrición, método de pago, etc.
+        for (int i = 0; i < 9; ++i) getline(ss, temp, ',');
 
         records.emplace_back(customer_id, item_purchased, review_rating);
     }
@@ -123,8 +129,14 @@ std::vector<Record> loadRecords(const std::string& filename) {
     return records;
 }
 
+void insertRecordsToBST(BST& bst, const std::vector<Record>& records) {
+    for (const auto& record : records) {
+        bst.insert(record);
+    }
+}
+
 int main() {
-    std::string filename = "../shopping_trends.csv";
+    std::string filename = "C:/Users/USER/OneDrive/Documentos/Labo06_02/shopping_trends.csv";
     std::vector<Record> records = loadRecords(filename);
 
     if (records.empty()) {
@@ -133,29 +145,31 @@ int main() {
     }
 
     BST bst;
-    for (const auto& record : records) {
-        bst.insert(record);
-    }
 
-    Record target_record(6, "", 0); // Definir un registro de ejemplo como objetivo para las búsquedas cercanas
-    int k = 6;
-    std::vector<Record> closest_records = bst.getKClosest(k, target_record);
+    // Crear un hilo para insertar registros en el BST
+    std::thread insertThread(insertRecordsToBST, std::ref(bst), std::cref(records));
 
+    // Esperar a que termine el hilo de inserción
+    insertThread.join();
+
+    Record target_record(6, "target_item", 4.5); // Cambia "target_item" por el item deseado
+    int k = 5; // Obtener los 5 valores más bajos de distancia
+
+    // Crear un hilo para obtener los k registros más cercanos
+    std::vector<Record> closest_records;
+    std::thread searchThread([&]() {
+        closest_records = bst.getKClosest(k, target_record);
+    });
+
+    // Esperar a que termine el hilo de búsqueda
+    searchThread.join();
+
+    // Mostrar los registros más cercanos
     std::cout << "Los " << k << " registros más cercanos son:\n";
     for (const auto& record : closest_records) {
-        
-        if(record.customer_id != target_record.customer_id){
-            std::cout << "Customer ID: " << record.customer_id 
-                  << ", Item Purchased: " << record.item_purchased 
-                  << ", Review Rating: " << record.review_rating 
+        std::cout << "Item Purchased: " << record.item_purchased
+                  << ", Review Rating: " << record.review_rating
                   << ", Manhattan Distance: " << record.manhattan_distance << '\n';
-        }
-        else{
-            std::cout << "El registro con Customer ID: " << record.customer_id 
-                  << ", Item Purchased: " << record.item_purchased 
-                  << ", Review Rating: " << record.review_rating << '\n'<<std::endl;
-        }
-        
     }
 
     return 0;
